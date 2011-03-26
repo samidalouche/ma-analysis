@@ -44,25 +44,6 @@ public class CalculateMA extends Configured implements Tool {
 	public enum Count {
 
 	}
-	
-	enum Variation {
-		UP("1"), DOWN("-1"), STABLE("0");
-		
-		private String output;
-
-		private Variation(String output) {
-			this.output = output;
-		}
-
-		public String getOutput() {
-			return output;
-		}
-
-	}
-	
-	enum State {
-		SMA20_HIGHER, SMA100_HIGHER, EQUAL
-	}
 
 	public static class MACalculatorMapper extends StockExchangeMapper<Text, Text> {
 
@@ -72,7 +53,7 @@ public class CalculateMA extends Configured implements Tool {
 		}
 
 	}
-
+	
 	public static class MACalculatorReducer extends Reducer<Text, Text, Text, Text> {
 
 		@Override
@@ -82,7 +63,7 @@ public class CalculateMA extends Configured implements Tool {
 			List<AverageOnDate> sma20Values = calculateSMA(20, closingValues);
 			List<AverageOnDate> sma100Values = calculateSMA(100, closingValues);
 			
-			State previousState = null;
+			VariationTracker variationTracker = new VariationTracker();
 			
 			for(int i = 0; i < sma100Values.size() ; i++) {
 				AverageOnDate v = sma100Values.get(i);
@@ -90,36 +71,15 @@ public class CalculateMA extends Configured implements Tool {
 				Double sma20 = sma20Values.get(i + 80).getAverage();
 				Double sma100 = sma100Values.get(i).getAverage();
 
-				State currentState = null;
-				if(sma20 > sma100) {
-					currentState = State.SMA20_HIGHER;
-				} else if(sma100 < sma20) {
-					currentState = State.SMA100_HIGHER;
-				} else {
-					currentState = State.EQUAL;
-				}
-				
-				Variation variation = Variation.STABLE;
-				if(previousState != null) {
-					if(! previousState.equals(currentState)) {
-						if(previousState.equals(State.SMA100_HIGHER)) {
-							variation = Variation.UP;
-						} else {
-							variation = Variation.DOWN;
-						}
-					} else {
-						// stable
-					}
-				}
+				Variation variation = variationTracker.nextVariation(sma20, sma100);
 				
 				writeOutput(key, context, v, sma20, sma100, variation);
-				previousState = currentState;
+				
 			}
 
 		}
 
-		private void writeOutput(Text key, Context context, AverageOnDate v,
-				Double sma20, Double sma100, Variation variation)
+		private void writeOutput(Text key, Context context, AverageOnDate v, Double sma20, Double sma100, Variation variation)
 				throws IOException, InterruptedException {
 			StringBuilder sb = new StringBuilder();
 			sb.append(sdf.format(v.getDate()))
@@ -307,6 +267,56 @@ public class CalculateMA extends Configured implements Tool {
 	public static void main(String[] args) throws Exception {
 		int result = ToolRunner.run(new Configuration(), new CalculateMA(), args);
 		System.exit(result);
+	}
+	
+	private enum Variation {
+		UP("1"), DOWN("-1"), STABLE("0");
+		
+		private String output;
+
+		private Variation(String output) {
+			this.output = output;
+		}
+
+		public String getOutput() {
+			return output;
+		}
+
+	}
+	
+	private  enum State {
+		SMA20_HIGHER, SMA100_HIGHER, EQUAL
+	}
+	
+	private static class VariationTracker {
+		private State previousState = null;
+		private State currentState = null;
+		
+		public Variation nextVariation(Double sma20, Double sma100) {
+			
+			if(sma20 > sma100) {
+				currentState = State.SMA20_HIGHER;
+			} else if(sma100 < sma20) {
+				currentState = State.SMA100_HIGHER;
+			} else {
+				currentState = State.EQUAL;
+			}
+			
+			Variation variation = Variation.STABLE;
+			if(previousState != null) {
+				if(! previousState.equals(currentState)) {
+					if(previousState.equals(State.SMA100_HIGHER)) {
+						variation = Variation.UP;
+					} else {
+						variation = Variation.DOWN;
+					}
+				} else {
+					// stable
+				}
+			}
+			previousState = currentState;
+			return variation;
+		}
 	}
 
 }
