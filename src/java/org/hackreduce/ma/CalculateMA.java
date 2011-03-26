@@ -15,13 +15,17 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.Mapper.Context;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
+import org.hackreduce.examples.stockexchange.RecordCounter.Count;
 import org.hackreduce.mappers.StockExchangeMapper;
 import org.hackreduce.models.StockExchangeRecord;
 
@@ -40,6 +44,25 @@ public class CalculateMA extends Configured implements Tool {
 	public enum Count {
 
 	}
+	
+	enum Variation {
+		UP("1"), DOWN("-1"), STABLE("0");
+		
+		private String output;
+
+		private Variation(String output) {
+			this.output = output;
+		}
+
+		public String getOutput() {
+			return output;
+		}
+
+	}
+	
+	enum State {
+		SMA20_HIGHER, SMA100_HIGHER, EQUAL
+	}
 
 	public static class MACalculatorMapper extends StockExchangeMapper<Text, Text> {
 
@@ -52,33 +75,69 @@ public class CalculateMA extends Configured implements Tool {
 
 	public static class MACalculatorReducer extends Reducer<Text, Text, Text, Text> {
 
-		NumberFormat currencyFormat = NumberFormat.getCurrencyInstance(Locale.getDefault());
-
 		@Override
 		protected void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
-			List<ClosingValueOnDate> closingValues = closingValues(values);
-			Collections.sort(closingValues);
-			List<AverageOnDate> average20 = calculateSMA(20, closingValues);
-			List<AverageOnDate> averages100 = calculateSMA(100, closingValues);
+			List<ClosingValue> closingValues = closingValuesSortedByDate(values);
 			
-			int i = 0;
-			for(AverageOnDate v : averages100) {
-				StringBuilder sb = new StringBuilder();
-				sb.append(sdf.format(v.getDate()))
-				.append(",")
-				.append(average20.get(i + 80).getAverage()) // 100-20 = 80
-				.append(",")
-				.append(averages100.get(i).getAverage());
+			List<AverageOnDate> sma20Values = calculateSMA(20, closingValues);
+			List<AverageOnDate> sma100Values = calculateSMA(100, closingValues);
+			
+			State previousState = null;
+			
+			for(int i = 0; i < sma100Values.size() ; i++) {
+				AverageOnDate v = sma100Values.get(i);
+				
+				Double sma20 = sma20Values.get(i + 80).getAverage();
+				Double sma100 = sma100Values.get(i).getAverage();
 
-				context.write(key, new Text(sb.toString()));
-				i++;
+				State currentState = null;
+				if(sma20 > sma100) {
+					currentState = State.SMA20_HIGHER;
+				} else if(sma100 < sma20) {
+					currentState = State.SMA100_HIGHER;
+				} else {
+					currentState = State.EQUAL;
+				}
+				
+				Variation variation = Variation.STABLE;
+				if(previousState != null) {
+					if(! previousState.equals(currentState)) {
+						if(previousState.equals(State.SMA100_HIGHER)) {
+							variation = Variation.UP;
+						} else {
+							variation = Variation.DOWN;
+						}
+					} else {
+						// stable
+					}
+				}
+				
+				writeOutput(key, context, v, sma20, sma100, variation);
+				previousState = currentState;
 			}
 
 		}
 
-		private List<ClosingValueOnDate> closingValues(Iterable<Text> values) {
+		private void writeOutput(Text key, Context context, AverageOnDate v,
+				Double sma20, Double sma100, Variation variation)
+				throws IOException, InterruptedException {
+			StringBuilder sb = new StringBuilder();
+			sb.append(sdf.format(v.getDate()))
+				.append(",")
+				.append(v.getClosePrice())
+				.append(",")
+				.append(sma20)
+				.append(",")
+				.append(sma100)
+				.append(",")
+				.append(variation.getOutput());
 			
-			List<ClosingValueOnDate> temp = new ArrayList<ClosingValueOnDate>();
+			context.write(key, new Text(sb.toString()));
+		}
+
+		private List<ClosingValue> closingValuesSortedByDate(Iterable<Text> values) {
+			
+			List<ClosingValue> temp = new ArrayList<ClosingValue>();
 			for(Text v : values) {
 				String[] attributes = v.toString().split(",");
 				if (attributes.length != 2)
@@ -92,15 +151,16 @@ public class CalculateMA extends Configured implements Tool {
 				}
 				Double closePrice = Double.parseDouble(attributes[1]);
 				
-				temp.add(new ClosingValueOnDate(date, closePrice));
+				temp.add(new ClosingValue(date, closePrice));
 			}
+			Collections.sort(temp);
 			return temp;
 		}
 
-		private List<AverageOnDate> calculateSMA(int numberOfDaysWindow, List<ClosingValueOnDate> closingValues) {
+		private List<AverageOnDate> calculateSMA(int numberOfDaysWindow, List<ClosingValue> closingValues) {
 			double [] prices = new double[closingValues.size()];
 			int i = 0;
-			for(ClosingValueOnDate c : closingValues) {
+			for(ClosingValue c : closingValues) {
 				prices[i] = c.getValue();
 				i++;
 			}
@@ -113,21 +173,53 @@ public class CalculateMA extends Configured implements Tool {
 			
 			List<AverageOnDate> result = new ArrayList<AverageOnDate>();
 			for(int x = 0 ; x < outNbElement.value ; x++) {
-				Date d = closingValues.get(begIdx.value + x).getDate();
-				result.add(new AverageOnDate(d, out[x]));				
+				ClosingValue v = closingValues.get(begIdx.value + x);
+				Date d = v.getDate();
+				result.add(new AverageOnDate(d, out[x], v.getValue()));				
 			}
 
 			return result;
 		}
 	}
 
+	
+	public static class SMACrossOverPointsReducer extends Reducer<Text, Text, Text, Text> {
+
+		
+
+
+		@Override
+		protected void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
+			
+			
+			for(Text v : values) {
+				String input = v.toString();
+				String[] attributes = v.toString().split(",");
+				
+				if (attributes.length != 3)
+					throw new IllegalArgumentException("Input string given did not have 2 values in CSV format");
+
+				Date date;
+				try {
+					date = sdf.parse(attributes[0]);
+				} catch (ParseException e) {
+					throw new RuntimeException(e);
+				}
+				
+			}
+		}
+	}
+
 	private static class AverageOnDate {
 		private Date date;
 		private Double average;
-		public AverageOnDate(Date date, Double average) {
+		private Double closePrice;
+		
+		public AverageOnDate(Date date, Double average, Double closePrice) {
 			super();
 			this.date = date;
 			this.average = average;
+			this.closePrice = closePrice;
 		}
 		public Date getDate() {
 			return date;
@@ -135,13 +227,16 @@ public class CalculateMA extends Configured implements Tool {
 		public Double getAverage() {
 			return average;
 		}
+		public Double getClosePrice() {
+			return closePrice;
+		}
 
 	}
 	
-	private static class ClosingValueOnDate implements Comparable<ClosingValueOnDate>{
+	private static class ClosingValue implements Comparable<ClosingValue>{
 		private Date date;
 		private Double value;
-		public ClosingValueOnDate(Date date, Double value) {
+		public ClosingValue(Date date, Double value) {
 			super();
 			this.date = date;
 			this.value = value;
@@ -154,7 +249,7 @@ public class CalculateMA extends Configured implements Tool {
 		}
 		
 		@Override
-		public int compareTo(ClosingValueOnDate o) {
+		public int compareTo(ClosingValue o) {
 			return date.compareTo(o.getDate());
 		}
 
@@ -169,6 +264,15 @@ public class CalculateMA extends Configured implements Tool {
 			System.exit(2);
 		}
 
+		Job job = generateSMAJob(args, conf);
+
+		if(!job.waitForCompletion(true)) return 1;
+		
+		return 0;
+		
+	}
+
+	private Job generateSMAJob(String[] args, Configuration conf) throws IOException {
 		// Creating the MapReduce job (configuration) object
 		Job job = new Job(conf);
 		job.setJarByClass(getClass());
@@ -193,13 +297,13 @@ public class CalculateMA extends Configured implements Tool {
 		FileInputFormat.addInputPath(job, new Path(args[0]));
 
 		// Preparing the output folder by first deleting it if it exists
-		Path output = new Path(args[1]);
+		Path output = new Path(args[1] + "-sma");
 		FileSystem.get(conf).delete(output, true);
 		FileOutputFormat.setOutputPath(job, output);
-
-		return job.waitForCompletion(true) ? 0 : 1;
+		return job;
 	}
-
+	
+	
 	public static void main(String[] args) throws Exception {
 		int result = ToolRunner.run(new Configuration(), new CalculateMA(), args);
 		System.exit(result);
