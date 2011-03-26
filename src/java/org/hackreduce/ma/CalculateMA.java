@@ -15,7 +15,6 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.io.DoubleWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Reducer;
@@ -25,8 +24,6 @@ import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 import org.hackreduce.mappers.StockExchangeMapper;
 import org.hackreduce.models.StockExchangeRecord;
-
-import sun.misc.Compare;
 
 import com.tictactec.ta.lib.Core;
 import com.tictactec.ta.lib.MInteger;
@@ -68,9 +65,9 @@ public class CalculateMA extends Configured implements Tool {
 			for(AverageOnDate v : averages100) {
 				StringBuilder sb = new StringBuilder();
 				sb.append(sdf.format(v.getDate()))
-				.append("/")
+				.append(",")
 				.append(average20.get(i + 80).getAverage()) // 100-20 = 80
-				.append("/")
+				.append(",")
 				.append(averages100.get(i).getAverage());
 
 				context.write(key, new Text(sb.toString()));
