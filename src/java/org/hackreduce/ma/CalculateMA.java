@@ -42,13 +42,15 @@ public class CalculateMA extends Configured implements Tool {
 	private static SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
 
 	public enum Count {
-
+		TOTAL_KEYS,
+		UNIQUE_SYMBOLS
 	}
 
 	public static class MACalculatorMapper extends StockExchangeMapper<Text, Text> {
 
 		@Override
 		protected void map(StockExchangeRecord record, Context context) throws IOException, InterruptedException {
+			context.getCounter(Count.TOTAL_KEYS).increment(1);
 			context.write(new Text(record.getStockSymbol()), new Text(sdf.format(record.getDate()) + "," + record.getStockPriceClose()));
 		}
 
@@ -58,6 +60,8 @@ public class CalculateMA extends Configured implements Tool {
 
 		@Override
 		protected void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
+			context.getCounter(Count.UNIQUE_SYMBOLS).increment(1);
+			
 			List<ClosingValue> closingValues = closingValuesSortedByDate(values);
 			
 			List<AverageOnDate> sma20Values = calculateSMA(20, closingValues);
